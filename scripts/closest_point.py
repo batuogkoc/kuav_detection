@@ -50,7 +50,7 @@ def __detect_center_old(ray_list, d=1000):
 
     return one_true_center
 
-def __ray_center(ray_0_point_0,ray_0_point_1,ray_1_point_0,ray_1_point_1):
+def ray_center(ray_0_point_0,ray_0_point_1,ray_1_point_0,ray_1_point_1):
 
     #2 noktadan geçen doğru için gereken noktalar
        
@@ -88,18 +88,14 @@ def __ray_center(ray_0_point_0,ray_0_point_1,ray_1_point_0,ray_1_point_1):
 
 
 
-def multi_ray_center(ray_0_point_0,ray_0_point_1,other_rays_point_0,other_rays_point_1):
+def multi_ray_center(ray_0_point_0,ray_0_direction,other_rays_point_0,other_rays_direction):
     ray_count = other_rays_point_0.shape[1]
     #2 noktadan geçen doğru için gereken noktalar
        
-    # bu noktalardan geçen vektör
-    ray_0_direction = (ray_0_point_1 - ray_0_point_0) / norm(ray_0_point_1 - ray_0_point_0)
-    other_rays_direction = (other_rays_point_1 - other_rays_point_0) / norm(other_rays_point_1 - other_rays_point_0, axis=0)
-
     # #matematik
     
     UC = cross(other_rays_direction, ray_0_direction, axis=0)
-    UC /= norm(UC, axis=0)
+    # UC /= norm(UC, axis=0)
     
     
     RHS = other_rays_point_0 - ray_0_point_0
@@ -133,14 +129,15 @@ def detect_center(ray_list, d=1000):
     """
     centers = None
     ray_points_0 = np.hstack([ray[0].reshape(3,1) for ray in ray_list])
-    ray_points_1 = np.hstack([ray[1].reshape(3,1) for ray in ray_list])
+    ray_directions= np.hstack([ray[1].reshape(3,1) for ray in ray_list])
+    ray_directions = ray_directions / norm(ray_directions, axis=0)
     # doğrulardaki en yakın noktaların birbirinden uzak olması durumunda uygulanan ayıklama
     for i in range(0,len(ray_list)):
         ray_0_point_0 = ray_points_0[:,i:i+1]
-        ray_0_point_1 = ray_points_1[:,i:i+1]
+        ray_0_direction = ray_directions[:,i:i+1]
         other_rays_point_0 = ray_points_0[:,i+1:]
-        other_rays_point_1 = ray_points_1[:,i+1:]
-        res = multi_ray_center(ray_0_point_0, ray_0_point_1, other_rays_point_0, other_rays_point_1)
+        other_rays_direction = ray_directions[:,i+1:]
+        res = multi_ray_center(ray_0_point_0, ray_0_direction, other_rays_point_0, other_rays_direction)
         centers_interim = res[0]
         D1 = res[1]
         D2 = res[2]
@@ -172,6 +169,65 @@ def detect_center(ray_list, d=1000):
 
     return np.average(real_centers, axis=1)
 
+class RayCenterCalculator(object):
+    def __init__(self,d:float):
+        self.d = d
+        self._real_centers=None
+        self.ray_origins=None
+        self.ray_directions=None
+        self._centers=None
+    
+    def add_ray(self, ray:np.ndarray):
+        ray_origin = ray[0]
+        ray_direction = ray[1] / norm(ray[1])
+        if self.ray_origins is None:
+            self.ray_origins = ray_origin
+            self.ray_directions = ray_direction
+            return None
+        
+        res = multi_ray_center(ray_origin, ray_direction, self.ray_origins, self.ray_directions)
+        self.ray_origins = np.hstack((self.ray_origins, ray_origin))
+        self.ray_directions = np.hstack((self.ray_directions, ray_direction))
+
+        centers_interim = res[0]
+        D1 = res[1]
+        D2 = res[2]
+
+        centers_interim = centers_interim.T[np.where(norm(D1-D2,axis=0)<self.d)].T
+        if self._centers is None:
+            self._centers = centers_interim
+        else:
+            self._centers = np.hstack((self._centers, centers_interim))
+
+        if self._centers.shape[1] == 0:
+            return None
+
+        # a = centers_interim.T.reshape(1,-1,3)
+        # b = np.hstack((self._centers, centers_interim)).T.reshape(-1,1,3)
+        # score = np.average(norm(a - b, axis=2), axis=0)
+        # real_centers_interim = centers_interim.T[np.where(score<d)].T
+
+        # if self._real_centers is None:
+        #     self._real_centers = real_centers_interim
+        # else:
+        #     self._real_centers = np.hstack((self._real_centers, real_centers_interim))
+        
+        # if self._real_centers.shape[1] == 0:
+        #     return None
+        
+        # return np.average(self._real_centers, axis=1) 
+        return np.average(self._centers, axis=1) 
+
+        
+def oop_test(rays, d):
+    calculator = RayCenterCalculator(d)
+    result = None
+    for ray in rays:
+        result = calculator.add_ray(ray)
+    # result = calculator._test(rays, d)
+    return result
+
+
         
 if __name__=="__main__":
     # XA0 = array([[1, 0, 0]]).T
@@ -199,18 +255,21 @@ if __name__=="__main__":
     #     center = ray_center(ray_0_point_0.reshape(3), ray_0_point_1.reshape(3), other_rays_point_0[:,i].reshape(3), other_rays_point_1[:,i].reshape(3))[0]
     #     print(np.allclose(center, centers[:,i]))
 
-    N=50
-    d=0.5
-    rays = [[np.random.rand(3) for i in range(2)] for j in range(N)]
+    N=100
+    d=1000
+    rays = [[np.random.rand(3,1) for i in range(2)] for j in range(N)]
+
+    # start = time.perf_counter()
+    # print(__detect_center_old(rays, d))
+    # print(time.perf_counter()-start)
 
     start = time.perf_counter()
     print(detect_center(rays, d))
     print(time.perf_counter()-start)
-
+    
     start = time.perf_counter()
-    print(detect_center_new(rays, d))
+    print(oop_test(rays, d))
     print(time.perf_counter()-start)
-        
         
         
 

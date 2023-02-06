@@ -15,7 +15,7 @@ from kudrone_py_utils.transformation import Transformation
 from visualization_msgs.msg import Marker, MarkerArray
 from std_msgs.msg import Byte
 from scipy.spatial.transform import Rotation
-from closest_point import detect_center
+from closest_point import detect_center, RayCenterCalculator
 
 tf_buffer = tf2_ros.Buffer()
 
@@ -30,7 +30,7 @@ fwd_cam_info=None
 fwd_cam_img=None
 marker_array_pub=None
 marker_pub=None
-
+ray_center_calculator =  RayCenterCalculator(1000)
 
 rays = []
 
@@ -117,6 +117,7 @@ def process_data():
     global fwd_cam_img_queue
     global fwd_cam_transform_queue
     global markers
+    global ray_center_calculator
 
     if base_to_fwd_cam_transform is None or fwd_cam_info is None:
         return
@@ -152,7 +153,7 @@ def process_data():
     K_inv = np.linalg.inv(get_K_matrix(fwd_cam_info))
     # print(K_inv)
     map_to_fwd_cam_trans = trans @ fcu_frame_to_base_transform @ base_to_fwd_cam_transform
-
+    center = None
     for bounding_box in bounding_boxes:
         center = ((bounding_box[1] + bounding_box[0])/2).reshape(2,1)
         pixel_noise = 10
@@ -170,12 +171,13 @@ def process_data():
 
         ray_map = (ray_origin_map, ray_direction_map, image.header.stamp)
         rays.append(ray_map)
+        start = time.perf_counter()
+        center = ray_center_calculator.add_ray(ray_map)
+        print(time.perf_counter()-start)
 
     publish_markers(rays)
 
-    start = time.perf_counter()
-    center = detect_center([(ray[0].reshape(3), (ray[0] + ray[1]).reshape(3)) for ray in rays])
-    print(time.perf_counter()-start)
+
     if center is not None:
         print(center)
 
