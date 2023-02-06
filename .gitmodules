@@ -1,0 +1,3 @@
+[submodule "scripts/kudrone_py_utils"]
+	path = scripts/kudrone_py_utils
+	url = git@github.com:KU-Drone/kudrone_py_utils.git
