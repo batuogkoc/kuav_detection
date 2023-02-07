@@ -94,61 +94,32 @@ def detect_balls(img, red_threshold=10):
 def get_K_matrix(info:CameraInfo):
     return np.array(info.K).reshape(3,3)
 
-def fwd_cam_img_callback(data: Image):
-    global fwd_cam_img_queue
-    fwd_cam_img_queue.append(data)
-    while (data.header.stamp - fwd_cam_img_queue[0].header.stamp)>QUEUE_TIME_LIMIT:
-        fwd_cam_img_queue.popleft()
-    process_data()
-
-
-def fwd_cam_info_callback(data:CameraInfo):
-    global fwd_cam_info
-    fwd_cam_info = data
-
 def fwd_cam_transform_callback(data: Odometry):
     global fwd_cam
     fwd_cam.fill_transforms()
+    loop()
 
-def process_data():
+def loop():
     global fwd_cam_img
     global fwd_cam_img_queue
     global fwd_cam_transform_queue
     global markers
     global ray_center_calculator
     global fwd_cam
-
-    # if len(fwd_cam_img_queue) < 1:
-    #     return
-    # trans = None
-    # image = None
-
-    # for i in range(1, len(fwd_cam_img_queue)):
-    #     try:
-    #         trans = tf_buffer.lookup_transform("map", "zephyr_delta_wing_ardupilot_camera__camera_pole__fwd_cam_link", fwd_cam_img_queue[-i].header.stamp)
-    #         image = fwd_cam_img_queue[-i]
-    #         del fwd_cam_img_queue[-i]
-    #         break
-    #     except tf2_ros.ExtrapolationException:
-    #         continue
-    # if trans is None:
-    #     return
     
     if len(fwd_cam.img_queue) == 0:
         return
-    
-    msg = fwd_cam.pop_message_left(True)
+        
+    msg = fwd_cam.pop_message(True)
     if msg is None:
         return
     image, map_to_fwd_cam_trans = msg
-
-    # map_to_fwd_cam_trans = Transformation.from_TransformStamped(trans)
 
     img = CvBridge().imgmsg_to_cv2(image)
     img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
     bounding_boxes = detect_balls(img)
 
-    K_inv = np.linalg.inv(get_K_matrix(fwd_cam_info))
+    K_inv = np.linalg.inv(fwd_cam.get_K_matrix())
     # print(K_inv)
 
     center = None
@@ -206,8 +177,6 @@ def process_data():
 if __name__=="__main__":
     node = rospy.init_node("ball_detector")
     listener = tf2_ros.TransformListener(tf_buffer)
-    rospy.Subscriber("/fwd_cam/raw", Image, fwd_cam_img_callback)
-    rospy.Subscriber("/fwd_cam/info", CameraInfo, fwd_cam_info_callback)
     rospy.Subscriber("/mavros/global_position/local", Odometry, fwd_cam_transform_callback)
     marker_array_pub = rospy.Publisher("visualization_marker_array", MarkerArray, queue_size=10)
     marker_pub = rospy.Publisher("visualization_marker", Marker, queue_size=10)
