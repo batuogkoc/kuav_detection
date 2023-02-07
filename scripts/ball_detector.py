@@ -16,6 +16,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 from std_msgs.msg import Byte
 from scipy.spatial.transform import Rotation
 from closest_point import detect_center, RayCenterCalculator
+from lib import ROSCamera
 
 tf_buffer = tf2_ros.Buffer()
 
@@ -24,13 +25,14 @@ QUEUE_TIME_LIMIT=rospy.Duration(secs=5)
 
 fwd_cam_img_queue=deque(maxlen=QUEUE_SIZE)
 fwd_cam_transform_queue=deque(maxlen=QUEUE_SIZE)
-base_to_fwd_cam_transform=None
-fcu_frame_to_base_transform=Transformation.identity()
+
 fwd_cam_info=None
 fwd_cam_img=None
 marker_array_pub=None
 marker_pub=None
-ray_center_calculator =  RayCenterCalculator(1000)
+ray_center_calculator = RayCenterCalculator(1000)
+
+fwd_cam = None
 
 rays = []
 
@@ -57,7 +59,6 @@ def publish_markers(rays):
         marker.type = Marker.ARROW
         marker.action = Marker.ADD
         marker.id = i
-        marker.pose.position = start_point
         marker.scale.x = 0.1
         marker.scale.y = 0.02
         marker.scale.z = 0.02
@@ -98,19 +99,16 @@ def fwd_cam_img_callback(data: Image):
     fwd_cam_img_queue.append(data)
     while (data.header.stamp - fwd_cam_img_queue[0].header.stamp)>QUEUE_TIME_LIMIT:
         fwd_cam_img_queue.popleft()
-    
     process_data()
 
-def fwd_cam_transform_callback(data: Odometry):
-    global fwd_cam_transform_queue
-    fwd_cam_transform_queue.append(data)
-    while (data.header.stamp - fwd_cam_transform_queue[0].header.stamp)>QUEUE_TIME_LIMIT:
-        fwd_cam_transform_queue.popleft()
-    process_data()
 
 def fwd_cam_info_callback(data:CameraInfo):
     global fwd_cam_info
     fwd_cam_info = data
+
+def fwd_cam_transform_callback(data: Odometry):
+    global fwd_cam
+    fwd_cam.fill_transforms()
 
 def process_data():
     global fwd_cam_img
@@ -118,33 +116,33 @@ def process_data():
     global fwd_cam_transform_queue
     global markers
     global ray_center_calculator
+    global fwd_cam
 
-    if base_to_fwd_cam_transform is None or fwd_cam_info is None:
-        return
-    if len(fwd_cam_img_queue) < 1 or len(fwd_cam_transform_queue) < 2:
-        return
-    if fwd_cam_img_queue[-1].header.stamp>fwd_cam_transform_queue[-1].header.stamp:
-        return
+    # if len(fwd_cam_img_queue) < 1:
+    #     return
+    # trans = None
+    # image = None
 
-    image = fwd_cam_img_queue[-1]
-    o1 = fwd_cam_transform_queue[-1] #right after image
+    # for i in range(1, len(fwd_cam_img_queue)):
+    #     try:
+    #         trans = tf_buffer.lookup_transform("map", "zephyr_delta_wing_ardupilot_camera__camera_pole__fwd_cam_link", fwd_cam_img_queue[-i].header.stamp)
+    #         image = fwd_cam_img_queue[-i]
+    #         del fwd_cam_img_queue[-i]
+    #         break
+    #     except tf2_ros.ExtrapolationException:
+    #         continue
+    # if trans is None:
+    #     return
     
-    i=-1
-    while fwd_cam_transform_queue[i].header.stamp>image.header.stamp:
-        o1 = fwd_cam_transform_queue[i]
-        i -= 1
+    if len(fwd_cam.img_queue) == 0:
+        return
+    
+    msg = fwd_cam.pop_message_left(True)
+    if msg is None:
+        return
+    image, map_to_fwd_cam_trans = msg
 
-    i=-1
-    while fwd_cam_transform_queue[i].header.stamp>image.header.stamp:
-        i -= 1
-    o0 = fwd_cam_transform_queue[i] #right before image
-
-    t = duration_to_sec(image.header.stamp-o0.header.stamp)/duration_to_sec(o1.header.stamp-o0.header.stamp)
-
-    trans1 = Transformation.from_Odometry(o1)
-    trans0 = Transformation.from_Odometry(o0)
-
-    trans = Transformation.lerp(trans0, trans1, t)
+    # map_to_fwd_cam_trans = Transformation.from_TransformStamped(trans)
 
     img = CvBridge().imgmsg_to_cv2(image)
     img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
@@ -152,7 +150,7 @@ def process_data():
 
     K_inv = np.linalg.inv(get_K_matrix(fwd_cam_info))
     # print(K_inv)
-    map_to_fwd_cam_trans = trans @ fcu_frame_to_base_transform @ base_to_fwd_cam_transform
+
     center = None
     for bounding_box in bounding_boxes:
         center = ((bounding_box[1] + bounding_box[0])/2).reshape(2,1)
@@ -205,59 +203,21 @@ def process_data():
     
     fwd_cam_img = img
 
-def vtol_state_callback(data: Byte):
-    global fcu_frame_to_base_transform
-    MAV_VTOL_STATE_UNDEFINED = 0	
-    MAV_VTOL_STATE_TRANSITION_TO_FW	= 1 
-    MAV_VTOL_STATE_TRANSITION_TO_MC	= 2 
-    MAV_VTOL_STATE_MC = 3
-    MAV_VTOL_STATE_FW = 4
-    matrix = np.array([[0, 0, -1],
-                       [0, 1, 0],
-                       [1, 0, 0]])
-
-    if data.data == MAV_VTOL_STATE_FW:
-        fcu_frame_to_base_transform = Transformation.identity()
-    elif data.data == MAV_VTOL_STATE_MC:
-        fcu_frame_to_base_transform = Transformation(Rotation.from_matrix(matrix), np.zeros((3,1)))
-    elif data.data == MAV_VTOL_STATE_TRANSITION_TO_MC:
-        fcu_frame_to_base_transform = Transformation(Rotation.from_matrix(matrix), np.zeros((3,1)))
-    elif data.data == MAV_VTOL_STATE_TRANSITION_TO_FW:
-        fcu_frame_to_base_transform = Transformation.identity()
-    elif data.data == MAV_VTOL_STATE_UNDEFINED:
-        fcu_frame_to_base_transform = Transformation.identity()
-    else:
-        print("Invalid vtol state")
-        fcu_frame_to_base_transform = Transformation.identity()
-
-
 if __name__=="__main__":
     node = rospy.init_node("ball_detector")
     listener = tf2_ros.TransformListener(tf_buffer)
     rospy.Subscriber("/fwd_cam/raw", Image, fwd_cam_img_callback)
     rospy.Subscriber("/fwd_cam/info", CameraInfo, fwd_cam_info_callback)
     rospy.Subscriber("/mavros/global_position/local", Odometry, fwd_cam_transform_callback)
-    rospy.Subscriber("/vtol_state", Byte, vtol_state_callback)
     marker_array_pub = rospy.Publisher("visualization_marker_array", MarkerArray, queue_size=10)
     marker_pub = rospy.Publisher("visualization_marker", Marker, queue_size=10)
     kuav_detection_path = rospkg.RosPack().get_path("kuav_detection")
-    # img = cv2.imread(os.path.join(kuav_detection_path, "test_data/ball_120deg_720p_100m.png"))
     
+    fwd_cam = ROSCamera("/fwd_cam/raw", "/fwd_cam/info", "map", "zephyr_delta_wing_ardupilot_camera__camera_pole__fwd_cam_link", QUEUE_SIZE, QUEUE_TIME_LIMIT)
+
     #wait for tf buffer to fill up
     time.sleep(0.5)
     while not rospy.is_shutdown():
-        if base_to_fwd_cam_transform is None:
-            try:
-                transform = tf_buffer.lookup_transform("base_link",  "zephyr_delta_wing_ardupilot_camera__camera_pole__fwd_cam_link", rospy.Time(0))
-                # matrix = np.array([[0, -1, 0],
-                #                    [1, 0, 0],
-                #                    [0, 0, 1],])
-                # base_to_fwd_cam_transform = Transformation(Rotation.from_matrix(matrix), np.zeros((3,1))) @ Transformation.from_TransformStamped(transform)
-                base_to_fwd_cam_transform = Transformation.from_TransformStamped(transform)
-                print(base_to_fwd_cam_transform)
-                print("tf found")
-            except tf2_ros.LookupException as e:
-                print("tf not present")
         if fwd_cam_img is not None:
             cv2.imshow("fwd_cam", fwd_cam_img)
         else:
