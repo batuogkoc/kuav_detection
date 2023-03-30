@@ -16,7 +16,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 from std_msgs.msg import Byte
 from scipy.spatial.transform import Rotation
 from closest_point import detect_center, RayCenterCalculator
-from lib import ROSCamera
+from lib import ROSCamera, ROSMultiCamera
 
 tf_buffer = tf2_ros.Buffer()
 
@@ -33,6 +33,7 @@ marker_pub=None
 ray_center_calculator = RayCenterCalculator(1000)
 
 fwd_cam = None
+multicamera = None
 
 rays = []
 
@@ -96,83 +97,101 @@ def get_K_matrix(info:CameraInfo):
 
 def fwd_cam_transform_callback(data: Odometry):
     global fwd_cam
-    fwd_cam.fill_transforms()
-    loop()
-
-def loop():
     global fwd_cam_img
-    global fwd_cam_img_queue
-    global fwd_cam_transform_queue
+    global multicamera
+    global ray_center_calculator
+    times = Times()
+    # fwd_cam.fill_transforms()
+    multicamera.fill_transforms()
+    times.add("fill")
+    img, center = process_camera(multicamera.cameras["cam_zero"])
+    if img is not None:
+        fwd_cam_img = img
+    print(ray_center_calculator.ray_directions.shape)
+    # process_camera(multicamera.cameras["cam_zero"])
+    # process_camera(multicamera.cameras["cam_one"])
+    # process_camera(multicamera.cameras["cam_two"])
+    # process_camera(multicamera.cameras["cam_three"])
+    # for camera in multicamera.cameras.values():
+    #     img, center = process_camera(camera)
+    #     if img is not None and center is not None:
+    #         fwd_cam_img = img
+    times.add("loop")
+    print(times)
+
+def process_camera(cam: ROSCamera):
+    ret_img = None
+    ret_center = None
     global markers
     global ray_center_calculator
-    global fwd_cam
-    
-    if len(fwd_cam.img_queue) == 0:
-        return
+
+    if len(cam.img_queue) == 0:
+        return ret_img, ret_center
+    print(cam.num_images_with_tf())
+    start = time.perf_counter()
+    while cam.num_images_with_tf() > 0:
+        msg = cam.pop_message(True)
+        if msg is None:
+            continue
+        image, map_to_fwd_cam_trans = msg
+
+        img = CvBridge().imgmsg_to_cv2(image)
+        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        bounding_boxes = detect_balls(img)
+
+        K_inv = np.linalg.inv(cam.get_K_matrix())
+        # print(K_inv)
+        center = None
+        for bounding_box in bounding_boxes:
+            center = ((bounding_box[1] + bounding_box[0])/2).reshape(2,1)
+            pixel_noise = 10
+            center = center + (np.random.rand(2,1)*pixel_noise - pixel_noise/2)
+            img = cv2.circle(img, center.reshape(-1).astype(int), 3, (255,0,0), thickness=-1)
+            center = np.vstack((center, np.ones((1,1))))
+            ray_direction = K_inv @ center
+
+            ray_direction /= np.linalg.norm(ray_direction)
+            ray_direction = np.array([[ray_direction[2][0], -ray_direction[0][0], -ray_direction[1][0]]])
+            # print(ray_direction.reshape(3))
+
+            ray_direction_map = map_to_fwd_cam_trans.rotation.apply(ray_direction.reshape(3)).reshape(3,1)
+            ray_origin_map = map_to_fwd_cam_trans.translation
+
+            ray_map = (ray_origin_map, ray_direction_map, image.header.stamp)
+            rays.append(ray_map)
+            
+            center = ray_center_calculator.add_ray(ray_map)
+        publish_markers(rays) 
+
+        if center is not None:
+            print(center)
+            ret_center = center
+            point = Point()
+            point.x = center[0]
+            point.y = center[1]
+            point.z = center[2]
+
+            marker = Marker()
+            marker.header.frame_id = "map"
+            marker.header.stamp = image.header.stamp
+            marker.type = Marker.SPHERE
+            marker.action = Marker.ADD
+            marker.id = 0
+            marker.pose.position = point
+            marker.scale.x = 2
+            marker.scale.y = 2
+            marker.scale.z = 2
+            marker.color.a = 1.0 
+            marker.color.r = 1.0
+            marker.color.g = 0.0
+            marker.color.b = 0.0
+
+            marker_pub.publish(marker)
         
-    msg = fwd_cam.pop_message(True)
-    if msg is None:
-        return
-    image, map_to_fwd_cam_trans = msg
+        ret_img = img
 
-    img = CvBridge().imgmsg_to_cv2(image)
-    img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-    bounding_boxes = detect_balls(img)
-
-    K_inv = np.linalg.inv(fwd_cam.get_K_matrix())
-    # print(K_inv)
-
-    center = None
-    for bounding_box in bounding_boxes:
-        center = ((bounding_box[1] + bounding_box[0])/2).reshape(2,1)
-        pixel_noise = 10
-        center = center + (np.random.rand(2,1)*pixel_noise - pixel_noise/2)
-        img = cv2.circle(img, center.reshape(-1).astype(int), 3, (255,0,0), thickness=-1)
-        center = np.vstack((center, np.ones((1,1))))
-        ray_direction = K_inv @ center
-
-        ray_direction /= np.linalg.norm(ray_direction)
-        ray_direction = np.array([[ray_direction[2][0], -ray_direction[0][0], -ray_direction[1][0]]])
-        # print(ray_direction.reshape(3))
-
-        ray_direction_map = map_to_fwd_cam_trans.rotation.apply(ray_direction.reshape(3)).reshape(3,1)
-        ray_origin_map = map_to_fwd_cam_trans.translation
-
-        ray_map = (ray_origin_map, ray_direction_map, image.header.stamp)
-        rays.append(ray_map)
-        start = time.perf_counter()
-        center = ray_center_calculator.add_ray(ray_map)
-        print(time.perf_counter()-start)
-
-    publish_markers(rays)
-
-
-    if center is not None:
-        print(center)
-
-        point = Point()
-        point.x = center[0]
-        point.y = center[1]
-        point.z = center[2]
-
-        marker = Marker()
-        marker.header.frame_id = "map"
-        marker.header.stamp = image.header.stamp
-        marker.type = Marker.SPHERE
-        marker.action = Marker.ADD
-        marker.id = 0
-        marker.pose.position = point
-        marker.scale.x = 0.5
-        marker.scale.y = 0.5
-        marker.scale.z = 0.5
-        marker.color.a = 1.0 
-        marker.color.r = 1.0
-        marker.color.g = 0.0
-        marker.color.b = 0.0
-
-        marker_pub.publish(marker)
-    
-    fwd_cam_img = img
+    # print(time.perf_counter()-start)
+    return ret_img, ret_center
 
 if __name__=="__main__":
     node = rospy.init_node("ball_detector")
@@ -182,7 +201,13 @@ if __name__=="__main__":
     marker_pub = rospy.Publisher("visualization_marker", Marker, queue_size=10)
     kuav_detection_path = rospkg.RosPack().get_path("kuav_detection")
     
-    fwd_cam = ROSCamera("/fwd_cam/raw", "/fwd_cam/info", "map", "zephyr_delta_wing_ardupilot_camera__camera_pole__fwd_cam_link", QUEUE_SIZE, QUEUE_TIME_LIMIT)
+    multicamera = ROSMultiCamera("map", QUEUE_SIZE, QUEUE_TIME_LIMIT)
+    multicamera.add_camera("fwd_cam", "/fwd_cam/raw", "/fwd_cam/info", "zephyr_delta_wing_ardupilot_camera__camera_pole__fwd_cam_link")
+    
+    multicamera.add_camera("cam_zero", "/cam_zero/raw", "/cam_zero/info", "zephyr_delta_wing_ardupilot_camera__camera_pole__cam_zero_link")
+    multicamera.add_camera("cam_one", "/cam_one/raw", "/cam_one/info", "zephyr_delta_wing_ardupilot_camera__camera_pole__cam_one_link")
+    multicamera.add_camera("cam_two", "/cam_two/raw", "/cam_two/info", "zephyr_delta_wing_ardupilot_camera__camera_pole__cam_two_link")
+    multicamera.add_camera("cam_three", "/cam_three/raw", "/cam_three/info", "zephyr_delta_wing_ardupilot_camera__camera_pole__cam_three_link")
 
     #wait for tf buffer to fill up
     time.sleep(0.5)

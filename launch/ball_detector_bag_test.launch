@@ -1,0 +1,12 @@
+<launch>
+    <arg name="bag_file" default="$(find kuav_simulation)/rosbag/2023-02-07-16-03-11.bag"/>
+    <arg name="rviz" default="true"/>
+    <arg name="rviz_config" default="$(find kuav_detection)/rviz/config.rviz"/>
+    <arg name="paused" default="true"/>
+    <arg name="_paused" value="$(eval '--pause' if paused else '')"/>
+    <!-- <node name="ball_detector" pkg="kuav_detection" type="ball_detector.py"/> -->
+    <node name="rosbag_play" pkg="rosbag" type="play" args="$(arg bag_file) $(arg _paused)"/>
+    <group if="$(arg rviz)">
+        <node type="rviz" name="rviz" pkg="rviz" args="-d $(arg rviz_config)" />
+    </group>
+</launch>

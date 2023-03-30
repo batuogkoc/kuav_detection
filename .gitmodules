@@ -1,3 +1,9 @@
 [submodule "scripts/kudrone_py_utils"]
 	path = scripts/kudrone_py_utils
 	url = git@github.com:KU-Drone/kudrone_py_utils.git
+[submodule "scripts/usr/bin/python"]
+	path = scripts/usr/bin/python
+	url = git@github.com:KU-Drone/coordinate_changer.git
+[submodule "scripts/coordinate_changer"]
+	path = scripts/coordinate_changer
+	url = git@github.com:KU-Drone/coordinate_changer.git
